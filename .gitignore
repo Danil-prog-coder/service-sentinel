@@ -31,3 +31,6 @@ dist/
 # IDE
 .idea/
 .vscode/
+
+# Claude Code local data (worktrees, settings)
+.claude/
