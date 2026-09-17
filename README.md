@@ -96,7 +96,9 @@ tests/                       pytest, без реальной сети и Telegra
 ```
 
 **Зависимости:** `httpx`, `PyYAML`, `aiosqlite`, `pydantic` (только для валидации конфига) и
-`tzdata` (часовые пояса на Windows и в slim-образах).
+`tzdata` (часовые пояса на Windows и в slim-образах). Телеграм-бот написан на том же `httpx`,
+отдельной библиотеки для Bot API нет. Объявлены в `pyproject.toml`, продублированы
+в `requirements.txt` / `requirements-dev.txt`.
 
 **Почему нет HTTP-сервера / FastAPI.** Сервису не нужен входящий API. Здоровье контейнера
 проверяется через heartbeat-файл: он обновляется после каждого цикла, а
@@ -285,6 +287,11 @@ python -m venv .venv
 ```
 
 (на Windows: `.venv\Scripts\pip install -e ".[dev]"`)
+
+Список зависимостей живёт в `pyproject.toml`. Для инструментов и CI, которые умеют только
+`requirements.txt`, рядом лежат `requirements.txt` (рантайм) и `requirements-dev.txt`
+(тесты и проверки) — они повторяют pyproject, и тест `tests/test_packaging.py` следит,
+чтобы списки не разъехались.
 
 ```bash
 cp .env.example .env
