@@ -1,0 +1,130 @@
+"""SQLite persistence of service state (one row per service, keyed by name)."""
+
+import dataclasses
+import logging
+from datetime import datetime
+from pathlib import Path
+from types import TracebackType
+from typing import Any, Self
+
+import aiosqlite
+
+from monitor.models import ServiceState, Status
+
+logger = logging.getLogger(__name__)
+
+SCHEMA_VERSION = 1
+
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS service_state (
+    name              TEXT PRIMARY KEY,
+    url               TEXT NOT NULL,
+    status            TEXT NOT NULL,
+    status_since      TEXT,
+    failure_count     INTEGER NOT NULL DEFAULT 0,
+    recovery_count    INTEGER NOT NULL DEFAULT 0,
+    failing_since     TEXT,
+    down_since        TEXT,
+    last_check        TEXT,
+    last_success      TEXT,
+    last_failure      TEXT,
+    last_error        TEXT,
+    last_status_code  INTEGER,
+    response_time     REAL,
+    notified_status   TEXT,
+    updated_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+)
+"""
+
+_FIELDS = [f.name for f in dataclasses.fields(ServiceState)]
+_DATETIME_FIELDS = {f.name for f in dataclasses.fields(ServiceState) if "datetime" in str(f.type)}
+_UPSERT = (
+    f"INSERT INTO service_state ({', '.join(_FIELDS)}) "  # noqa: S608 - static column names
+    f"VALUES ({', '.join('?' for _ in _FIELDS)}) "
+    "ON CONFLICT(name) DO UPDATE SET "
+    + ", ".join(f"{f} = excluded.{f}" for f in _FIELDS if f != "name")
+    + ", updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')"
+)
+
+
+def _to_db(state: ServiceState) -> list[Any]:
+    values: list[Any] = []
+    for name in _FIELDS:
+        value = getattr(state, name)
+        if isinstance(value, datetime):
+            value = value.isoformat()
+        values.append(value)
+    return values
+
+
+def _from_db(row: aiosqlite.Row) -> ServiceState:
+    data: dict[str, Any] = {name: row[name] for name in _FIELDS}
+    for name in _DATETIME_FIELDS:
+        if data[name] is not None:
+            data[name] = datetime.fromisoformat(data[name])
+    data["status"] = Status(data["status"])
+    if data["notified_status"] is not None:
+        data["notified_status"] = Status(data["notified_status"])
+    return ServiceState(**data)
+
+
+class StateStore:
+    def __init__(self, path: Path) -> None:
+        self._path = path
+        self._db: aiosqlite.Connection | None = None
+
+    async def open(self) -> None:
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._db = await aiosqlite.connect(self._path)
+        self._db.row_factory = aiosqlite.Row
+        await self._db.execute("PRAGMA journal_mode=WAL")
+        await self._db.execute("PRAGMA busy_timeout=5000")
+        await self._db.execute(_SCHEMA)
+        await self._db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+        await self._db.commit()
+        logger.info("state storage opened", extra={"db_path": str(self._path)})
+
+    async def close(self) -> None:
+        if self._db is not None:
+            await self._db.close()
+            self._db = None
+            logger.info("state storage closed")
+
+    async def __aenter__(self) -> Self:
+        await self.open()
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        await self.close()
+
+    @property
+    def _conn(self) -> aiosqlite.Connection:
+        if self._db is None:
+            raise RuntimeError("StateStore is not open")
+        return self._db
+
+    async def load(self, name: str, url: str) -> ServiceState:
+        """Load saved state; start fresh if unknown or if the checked URL changed."""
+        async with self._conn.execute(
+            "SELECT * FROM service_state WHERE name = ?", (name,)
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row is None:
+            return ServiceState(name=name, url=url)
+        state = _from_db(row)
+        if state.url != url:
+            logger.info(
+                "service URL changed, resetting state",
+                extra={"service": name, "old_url": state.url, "url": url},
+            )
+            return ServiceState(name=name, url=url)
+        return state
+
+    async def save(self, state: ServiceState) -> None:
+        await self._conn.execute(_UPSERT, _to_db(state))
+        await self._conn.commit()

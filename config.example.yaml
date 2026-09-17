@@ -1,0 +1,35 @@
+# service-sentinel configuration.
+# Copy to config.yaml and replace the placeholder URLs with your real sites.
+# Secrets (Telegram token / chat id) are NOT stored here - only in .env / environment.
+
+monitor:
+  interval: 10m            # how often to check all services (500ms / 5s / 10m / 1h)
+  failure_threshold: 2     # consecutive failed checks before a service is DOWN
+  recovery_threshold: 1    # consecutive successful checks before a DOWN service is UP again
+  request_timeout: 5s      # default per-request timeout
+  max_concurrency: 10      # max simultaneous HTTP requests
+  timezone: Europe/Moscow  # used for timestamps in Telegram messages
+  # user_agent: service-sentinel/0.1
+  # shutdown_timeout: 15s  # how long to wait for a running cycle on SIGTERM
+
+services:
+  # TODO: replace with your real URLs.
+  - name: "Tatiana Website"
+    url: "https://example.ru"                 # shown in alerts
+    health_url: "https://example.ru/health"   # optional: endpoint actually checked
+    enabled: true
+
+  - name: "Another API"
+    url: "https://api.example.com/health"
+    enabled: true
+    timeout: 10s              # optional per-service override
+    # failure_threshold: 3    # optional per-service override
+    # recovery_threshold: 2   # optional per-service override
+    # follow_redirects: true  # default true: 3xx are followed, final response is checked
+
+  - name: "Disabled example"
+    url: "https://old.example.org/health"
+    enabled: false
+
+# Stage 2 (not implemented yet): server metrics via a MetricsProvider
+# (Zabbix / own agent / SSH). See README, section "Server metrics".
