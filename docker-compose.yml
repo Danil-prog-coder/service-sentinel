@@ -4,9 +4,15 @@ services:
     image: service-sentinel:latest
     container_name: service-sentinel
     restart: unless-stopped
+    # .env is optional: on a hosting platform the secrets come from its environment
+    # variables panel, locally from .env (Compose reads it for ${...} substitution too).
     env_file:
-      - .env
+      - path: .env
+        required: false
     environment:
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
       CONFIG_PATH: /app/config.yaml
       DB_PATH: /app/data/monitor.db
       HEARTBEAT_PATH: /app/data/heartbeat.json

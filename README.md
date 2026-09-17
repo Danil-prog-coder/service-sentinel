@@ -381,6 +381,11 @@ docker compose ps
 - ротация логов;
 - volume для БД.
 
+**Деплой на хостинг (App Platform и т.п.).** `.env` в репозиторий не попадает, поэтому
+на сервере его нет — это нормально, файл необязателен. Задайте `TELEGRAM_BOT_TOKEN` и
+`TELEGRAM_CHAT_ID` (и при желании `LOG_LEVEL`) в разделе переменных окружения панели
+хостинга. Нужен Docker Compose ≥ 2.24.
+
 `config.yaml` монтируется read-only. После его изменения выполните
 `docker compose restart monitor`. Обновление кода: `git pull && docker compose up -d --build`.
 
