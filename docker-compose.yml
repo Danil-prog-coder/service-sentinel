@@ -30,8 +30,9 @@ services:
       - /tmp
     cap_drop:
       - ALL
-    security_opt:
-      - no-new-privileges:true
+    # No `security_opt: [no-new-privileges:true]` here: the hosting platform's compose
+    # sanitizer rejects the whole file when that key is present. Locally you can add it
+    # back via a docker-compose.override.yml.
     stop_grace_period: 30s
     mem_limit: 256m
     logging:
