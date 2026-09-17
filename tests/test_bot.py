@@ -2,6 +2,7 @@
 
 import asyncio
 from collections.abc import AsyncIterator
+from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
@@ -268,7 +269,11 @@ async def test_manual_check_updates_card(
 
     await bot.handle_update(press(ui.CB_CHECK + service.id))
     assert monitor.states["Магазин"].status is Status.UP
-    assert bot_api.last_text.startswith("🟢 Магазин")
+    assert bot_api.last_text.startswith("✅ Проверено ")
+    assert "— 200 OK за " in bot_api.last_text
+    assert "🟢 Магазин" in bot_api.last_text
+    # The message visibly changes while the check runs, not only afterwards.
+    assert bot_api.edits[-2]["text"] == "⏳ Проверяю «Магазин»…"
 
 
 async def test_check_all_button_runs_a_cycle(
@@ -459,3 +464,48 @@ async def test_delete_during_a_check_does_not_resurrect_the_site(
         assert monitor.registry.get("Медленный") is None
         assert await store.list_services() == []
         assert (await store.load("Медленный", "https://slow.test")).status is Status.UNKNOWN
+
+
+async def test_every_check_passes_through_a_visible_progress_state(
+    bot: TelegramBot, bot_api: BotApi, sites: ScriptedSites, monitor: MonitorService
+) -> None:
+    """A repeated check on a healthy site renders the same card, so the message must
+    still change: it goes card -> "⏳ Проверяю" -> card, never edit-to-identical-text."""
+    sites.set("https://shop.test", 200)
+    await add_site(bot, "https://shop.test", "Магазин")
+    service = monitor.registry.get("Магазин")
+    assert service is not None
+
+    await bot.handle_update(press(ui.CB_CHECK + service.id))
+    await bot.handle_update(press(ui.CB_CHECK + service.id))
+
+    texts = [edit["text"] for edit in bot_api.edits[-4:]]
+    assert [text.startswith("⏳ Проверяю") for text in texts] == [True, False, True, False]
+    assert all(a != b for a, b in pairwise(texts))
+    assert [a.get("text") for a in bot_api.answers[-2:]] == ["Проверяю…", "Проверяю…"]
+
+
+async def test_check_banner_reports_failures(
+    bot: TelegramBot, bot_api: BotApi, sites: ScriptedSites, monitor: MonitorService
+) -> None:
+    sites.set("https://shop.test", 502, 404)
+    await add_site(bot, "https://shop.test", "Магазин")
+    service = monitor.registry.get("Магазин")
+    assert service is not None
+    assert bot_api.last_text.startswith("✅ Сайт добавлен.\n❌ Проверено ")
+    assert "— HTTP 502" in bot_api.last_text
+
+    await bot.handle_update(press(ui.CB_CHECK + service.id))  # 404 changes nothing
+    assert bot_api.last_text.startswith("⚠️ Проверено ")
+    assert "статус не меняется" in bot_api.last_text
+    assert monitor.states["Магазин"].status is Status.DOWN
+
+
+async def test_check_all_button_reports_completion(
+    bot: TelegramBot, bot_api: BotApi, sites: ScriptedSites
+) -> None:
+    sites.set(CONFIG_SITE, 200)
+    await bot.handle_update(press(ui.CB_CHECK_ALL))
+    assert bot_api.edits[-2]["text"] == "⏳ Проверяю все сайты…"
+    assert bot_api.last_text.startswith("✅ Проверка завершена.")
+    assert "📋 Сайты" in bot_api.last_text

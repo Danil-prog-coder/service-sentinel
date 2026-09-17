@@ -199,8 +199,7 @@ class TelegramBot:
             await self._ask_for_url()
         elif data == ui.CB_CHECK_ALL:
             await self._answer(query_id, "Проверяю…")
-            await self._monitor.run_cycle()
-            await self._edit(message_id, *self._sites_view())
+            await self._check_all(message_id)
         elif data.startswith(ui.CB_CARD):
             await self._answer(query_id)
             await self._show_card(message_id, data.removeprefix(ui.CB_CARD))
@@ -225,10 +224,15 @@ class TelegramBot:
         text, markup = self._sites_view()
         await self._client.send_message(text, reply_markup=markup)
 
-    async def _check_all(self) -> None:
-        message_id = await self._client.send_message("⏳ Проверяю все сайты…")
+    async def _check_all(self, message_id: int | None = None) -> None:
+        text, markup = ui.checking_view("все сайты")
+        if message_id is None:
+            message_id = await self._client.send_message(text)
+        else:
+            await self._edit(message_id, text, markup)
         await self._monitor.run_cycle()
-        await self._edit(message_id, *self._sites_view())
+        listing, list_markup = self._sites_view()
+        await self._edit(message_id, f"✅ Проверка завершена.\n\n{listing}", list_markup)
 
     async def _ask_for_url(self) -> None:
         message_id = await self._client.send_message(ui.ADD_PROMPT, reply_markup=ui.force_reply())
@@ -242,9 +246,12 @@ class TelegramBot:
         except RegistryError as exc:
             await self._client.send_message(f"⚠️ {exc}")
             return
-        state = await self._monitor.check_service(service)
-        card, markup = ui.card_view(service, state, self._tz)
-        await self._client.send_message(f"✅ Сайт добавлен.\n\n{card}", reply_markup=markup)
+        result = await self._monitor.check_service(service)
+        card, markup = ui.card_view(service, self._monitor.state_of(service.name), self._tz)
+        banner = ui.check_banner(result, self._tz)
+        await self._client.send_message(
+            f"✅ Сайт добавлен.\n{banner}\n\n{card}", reply_markup=markup
+        )
 
     async def _show_card(self, message_id: int, sid: str) -> None:
         service = self._monitor.registry.by_id(sid)
@@ -262,8 +269,12 @@ class TelegramBot:
             await self._edit(message_id, *self._sites_view())
             return
         await self._answer(query_id, "Проверяю…")
-        state = await self._monitor.check_service(service)
-        await self._edit(message_id, *ui.card_view(service, state, self._tz))
+        # Two edits on purpose: the first one makes the message visibly change even when
+        # the result turns out identical, so pressing the button never looks ignored.
+        await self._edit(message_id, *ui.checking_view(f"«{service.name}»"))
+        result = await self._monitor.check_service(service)
+        card, markup = ui.card_view(service, self._monitor.state_of(service.name), self._tz)
+        await self._edit(message_id, f"{ui.check_banner(result, self._tz)}\n\n{card}", markup)
 
     async def _toggle(self, message_id: int, sid: str, query_id: str) -> None:
         service = self._resolve(sid)

@@ -126,17 +126,18 @@ class MonitorService:
             extra={"duration": round(loop.time() - started, 3), **summary},
         )
 
-    async def check_service(self, service: ManagedService) -> ServiceState:
-        """Check one service now. Paused services are checked but never alert."""
+    async def check_service(self, service: ManagedService) -> CheckResult | None:
+        """Check one service now and return the raw result (``None`` if it was deleted).
+
+        Paused services are checked on demand but never alert.
+        """
         # The lock makes a manual check wait for a running cycle instead of racing it:
         # state, storage and the "already notified" flag stay consistent, so the user
         # never gets a duplicate alert for a check they triggered themselves.
         async with self._locks[service.name]:
             if self._registry.get(service.name) is None:
                 logger.info("service was removed, check skipped", extra={"service": service.name})
-                return self._states.get(service.name) or ServiceState(
-                    name=service.name, url=service.check_url
-                )
+                return None
             async with self._semaphore:
                 result = await self._checker.check(
                     service.check_url,
@@ -161,7 +162,7 @@ class MonitorService:
             await self._store.save(state)
             if service.enabled:
                 await self._notify_if_needed(service, state)
-            return state
+            return result
 
     async def _process(self, service: ManagedService) -> None:
         # Any bug here must not break the other checks or the loop.

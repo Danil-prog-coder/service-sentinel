@@ -9,7 +9,7 @@ from datetime import tzinfo
 from typing import Any
 
 from monitor.checker.http import status_text
-from monitor.models import ServiceState, Status
+from monitor.models import CheckOutcome, CheckResult, ServiceState, Status
 from monitor.registry import ManagedService, ServiceSource
 from monitor.telegram.formatting import format_time
 
@@ -118,6 +118,28 @@ def force_reply() -> Keyboard:
     }
 
 
+def check_banner(result: CheckResult | None, tz: tzinfo) -> str:
+    """One line above the card telling the user what their manual check just returned."""
+    if result is None:
+        return "🔄 Проверка выполнена."
+    when = format_time(result.checked_at, tz, seconds=True)
+    code = status_text(result.status_code) if result.status_code is not None else None
+    if result.outcome is CheckOutcome.SUCCESS:
+        detail = code or "ответ получен"
+        if result.response_time is not None:
+            detail += f" за {result.response_time:.2f} с"
+        return f"✅ Проверено {when} — {detail}"
+    if result.outcome is CheckOutcome.IGNORED:
+        # 4xx: the server answered, so the status does not change (see README).
+        return f"⚠️ Проверено {when} — {code or 'ответ не учитывается'}, статус не меняется"
+    return f"❌ Проверено {when} — {result.error or code or 'ошибка'}"
+
+
+def checking_view(title: str) -> tuple[str, Keyboard]:
+    """Placeholder shown while a check is running, so the message visibly changes."""
+    return f"⏳ Проверяю {title}…", keyboard()
+
+
 def status_icon(service: ManagedService, state: ServiceState | None) -> str:
     if not service.enabled:
         return "⏸"
@@ -172,7 +194,7 @@ def sites_view(rows: Sequence[Row], tz: tzinfo) -> tuple[str, Keyboard]:
         (state.last_check for _, state in rows if state and state.last_check), default=None
     )
     if last_check is not None:
-        lines += ["", f"Последняя проверка: {format_time(last_check, tz)}"]
+        lines += ["", f"Последняя проверка: {format_time(last_check, tz, seconds=True)}"]
     buttons.append([button("🔄 Проверить все", CB_CHECK_ALL), button("➕ Добавить", CB_ADD)])
     buttons.append([button("« Назад", CB_MENU)])
     return "\n".join(lines), keyboard(*buttons)
@@ -196,7 +218,7 @@ def card_view(
             lines.append(f"Время ответа: {state.response_time:.2f} с")
         if state.last_error and state.status is not Status.UP:
             lines.append(f"Ошибка: {state.last_error}")
-        lines.append(f"Последняя проверка: {format_time(state.last_check, tz)}")
+        lines.append(f"Последняя проверка: {format_time(state.last_check, tz, seconds=True)}")
     if service.source is ServiceSource.CONFIG:
         lines += ["", "📄 Сайт из config.yaml: пауза и удаление — только в файле."]
 

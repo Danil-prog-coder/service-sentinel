@@ -7,10 +7,12 @@ from monitor.checker.http import status_text
 from monitor.models import ServiceState
 
 
-def format_time(value: datetime | None, tz: tzinfo) -> str:
+def format_time(value: datetime | None, tz: tzinfo, *, seconds: bool = False) -> str:
+    """Timestamp in the configured timezone; ``seconds`` for events the user just triggered."""
     if value is None:
         return "n/a"
-    return value.astimezone(tz).strftime("%Y-%m-%d %H:%M %Z")
+    pattern = "%Y-%m-%d %H:%M:%S %Z" if seconds else "%Y-%m-%d %H:%M %Z"
+    return value.astimezone(tz).strftime(pattern)
 
 
 def format_duration(seconds: float | None) -> str:
