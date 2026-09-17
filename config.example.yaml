@@ -1,5 +1,6 @@
 # service-sentinel configuration.
-# Copy to config.yaml and replace the placeholder URLs with your real sites.
+# The file is OPTIONAL: sites can be added straight from the Telegram bot (kept in SQLite).
+# Copy to config.yaml only if you want to pin sites to the server / to Git.
 # Secrets (Telegram token / chat id) are NOT stored here - only in .env / environment.
 
 monitor:
@@ -12,24 +13,22 @@ monitor:
   # user_agent: service-sentinel/0.1
   # shutdown_timeout: 15s  # how long to wait for a running cycle on SIGTERM
 
-services:
-  # TODO: replace with your real URLs.
-  - name: "Tatiana Website"
-    url: "https://example.ru"                 # shown in alerts
-    health_url: "https://example.ru/health"   # optional: endpoint actually checked
-    enabled: true
+# Sites listed here are read-only in the bot: it shows and checks them, but pausing and
+# deleting them is done in this file (sites added from Telegram are managed from the bot).
+# Uncomment and replace with your real URLs if you want file-managed sites.
 
-  - name: "Another API"
-    url: "https://api.example.com/health"
-    enabled: true
-    timeout: 10s              # optional per-service override
-    # failure_threshold: 3    # optional per-service override
-    # recovery_threshold: 2   # optional per-service override
-    # follow_redirects: true  # default true: 3xx are followed, final response is checked
-
-  - name: "Disabled example"
-    url: "https://old.example.org/health"
-    enabled: false
+# services:
+#   - name: "My Website"                        # unique name (state key in the database)
+#     url: "https://example.ru"                 # shown in alerts
+#     health_url: "https://example.ru/health"   # optional: endpoint actually checked
+#     enabled: true
+#
+#   - name: "My API"
+#     url: "https://api.example.com/health"
+#     timeout: 10s              # optional per-service override
+#     # failure_threshold: 3    # optional per-service override
+#     # recovery_threshold: 2   # optional per-service override
+#     # follow_redirects: true  # default true: 3xx are followed, final response is checked
 
 # Stage 2 (not implemented yet): server metrics via a MetricsProvider
 # (Zabbix / own agent / SSH). See README, section "Server metrics".

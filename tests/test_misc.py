@@ -18,6 +18,7 @@ from monitor.metrics import Metrics, ResourceThresholds, find_breaches
 from monitor.metrics.thresholds import consecutive_checks_required
 from monitor.models import CheckResult
 from monitor.monitoring import MonitorService
+from monitor.registry import ServiceRegistry
 from monitor.storage import StateStore
 from monitor.telegram import DryRunNotifier
 
@@ -99,7 +100,13 @@ async def test_run_forever_stops_on_signal(tmp_path: Path) -> None:
         httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client,
         StateStore(tmp_path / "db.sqlite") as store,
     ):
-        monitor = MonitorService(settings, services, HttpChecker(client), store, DryRunNotifier())
+        monitor = MonitorService(
+            settings,
+            ServiceRegistry(store, services),
+            HttpChecker(client),
+            store,
+            DryRunNotifier(),
+        )
         await monitor.load_state()
         stop = asyncio.Event()
         task = asyncio.create_task(monitor.run_forever(stop, lambda: beats.append(time.time())))
@@ -123,7 +130,7 @@ async def test_shutdown_cancels_stuck_cycle(tmp_path: Path) -> None:
     async with StateStore(tmp_path / "db.sqlite") as store:
         monitor = MonitorService(
             settings,
-            services,
+            ServiceRegistry(store, services),
             SlowChecker(None),  # type: ignore[arg-type]
             store,
             DryRunNotifier(),

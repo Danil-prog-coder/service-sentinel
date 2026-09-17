@@ -13,6 +13,9 @@ services:
       LOG_FORMAT: json
       TZ: Europe/Moscow
     volumes:
+      # config.yaml is optional: without it the monitor runs on the sites added from
+      # the Telegram bot (they live in the monitor-data volume). Create the file before
+      # `docker compose up`, otherwise Docker creates an empty directory in its place.
       - ./config.yaml:/app/config.yaml:ro
       - monitor-data:/app/data
     # Hardening: the app needs only outbound HTTPS and its data volume.

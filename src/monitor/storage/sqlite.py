@@ -1,7 +1,8 @@
-"""SQLite persistence of service state (one row per service, keyed by name)."""
+"""SQLite persistence: service state plus the sites added from Telegram."""
 
 import dataclasses
 import logging
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from types import TracebackType
@@ -13,7 +14,8 @@ from monitor.models import ServiceState, Status
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+_NOW = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')"
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS service_state (
@@ -35,6 +37,27 @@ CREATE TABLE IF NOT EXISTS service_state (
     updated_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 )
 """
+
+# Sites added from Telegram. Sites from config.yaml are NOT stored here: the file
+# stays the single source of truth for them.
+_SERVICES_SCHEMA = f"""
+CREATE TABLE IF NOT EXISTS managed_service (
+    name       TEXT PRIMARY KEY,
+    url        TEXT NOT NULL,
+    enabled    INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT ({_NOW})
+)
+"""
+
+
+@dataclass(frozen=True, slots=True)
+class ServiceRecord:
+    """One row of ``managed_service``: a site the user added from Telegram."""
+
+    name: str
+    url: str
+    enabled: bool = True
+
 
 _FIELDS = [f.name for f in dataclasses.fields(ServiceState)]
 _DATETIME_FIELDS = {f.name for f in dataclasses.fields(ServiceState) if "datetime" in str(f.type)}
@@ -80,6 +103,7 @@ class StateStore:
         await self._db.execute("PRAGMA journal_mode=WAL")
         await self._db.execute("PRAGMA busy_timeout=5000")
         await self._db.execute(_SCHEMA)
+        await self._db.execute(_SERVICES_SCHEMA)
         await self._db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
         await self._db.commit()
         logger.info("state storage opened", extra={"db_path": str(self._path)})
@@ -128,3 +152,37 @@ class StateStore:
     async def save(self, state: ServiceState) -> None:
         await self._conn.execute(_UPSERT, _to_db(state))
         await self._conn.commit()
+
+    async def delete_state(self, name: str) -> None:
+        await self._conn.execute("DELETE FROM service_state WHERE name = ?", (name,))
+        await self._conn.commit()
+
+    # --- sites added from Telegram -------------------------------------------------
+
+    async def list_services(self) -> list[ServiceRecord]:
+        """Telegram-managed sites, oldest first (the order shown in the bot)."""
+        async with self._conn.execute(
+            "SELECT name, url, enabled FROM managed_service ORDER BY created_at, name"
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [ServiceRecord(r["name"], r["url"], bool(r["enabled"])) for r in rows]
+
+    async def add_service(self, name: str, url: str) -> ServiceRecord:
+        await self._conn.execute(
+            "INSERT INTO managed_service (name, url) VALUES (?, ?)", (name, url)
+        )
+        await self._conn.commit()
+        logger.info("service added from telegram", extra={"service": name, "url": url})
+        return ServiceRecord(name, url)
+
+    async def set_service_enabled(self, name: str, enabled: bool) -> None:
+        await self._conn.execute(
+            "UPDATE managed_service SET enabled = ? WHERE name = ?", (int(enabled), name)
+        )
+        await self._conn.commit()
+
+    async def delete_service(self, name: str) -> None:
+        await self._conn.execute("DELETE FROM managed_service WHERE name = ?", (name,))
+        await self._conn.execute("DELETE FROM service_state WHERE name = ?", (name,))
+        await self._conn.commit()
+        logger.info("service deleted from telegram", extra={"service": name})

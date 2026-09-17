@@ -12,6 +12,7 @@ from monitor.checker import HttpChecker
 from monitor.config import MonitorSettings, ServiceConfig
 from monitor.models import Status
 from monitor.monitoring import MonitorService
+from monitor.registry import ServiceRegistry
 from monitor.storage import StateStore
 from monitor.telegram import TelegramClient
 
@@ -31,7 +32,11 @@ def make_monitor(
 ) -> Callable[[StateStore], MonitorService]:
     def factory(store: StateStore) -> MonitorService:
         return MonitorService(
-            SETTINGS, SERVICES, HttpChecker(site_client), store, make_telegram(max_attempts=1)
+            SETTINGS,
+            ServiceRegistry(store, SERVICES),
+            HttpChecker(site_client),
+            store,
+            make_telegram(max_attempts=1),
         )
 
     return factory
@@ -52,8 +57,11 @@ async def test_healthy_sites_send_nothing(
     await run_cycles(monitor, 3)
 
     assert telegram_api.messages == []
-    assert all(s.status is Status.UP for s in monitor.states.values())
-    assert "https://c.test/health" not in sites.calls  # disabled service is not checked
+    assert monitor.states["Site A"].status is Status.UP
+    assert monitor.states["Site B"].status is Status.UP
+    # A disabled service is known (so the bot can show it) but never checked.
+    assert monitor.states["Disabled"].status is Status.UNKNOWN
+    assert "https://c.test/health" not in sites.calls
     assert len(sites.calls) == 6
 
 

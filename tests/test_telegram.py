@@ -7,7 +7,9 @@ import httpx
 import pytest
 
 from conftest import CHAT_ID, TOKEN, TelegramRecorder
+from monitor.config import ServiceConfig
 from monitor.models import ServiceState, Status
+from monitor.registry import ManagedService, ServiceSource
 from monitor.telegram import TelegramClient, TelegramError
 from monitor.telegram.formatting import (
     format_down,
@@ -15,6 +17,7 @@ from monitor.telegram.formatting import (
     format_recovered,
     format_server_warning,
 )
+from monitor.telegram.ui import card_view, format_interval
 
 MSK = ZoneInfo("Europe/Moscow")
 
@@ -152,3 +155,26 @@ def test_format_duration(seconds: float | None, text: str) -> None:
 def test_format_server_warning() -> None:
     text = format_server_warning("production-01", [("RAM", 94.2), ("Disk", 71), ("CPU", 48)])
     assert text == "🟠 SERVER WARNING\n\nServer: production-01\nRAM: 94%\nDisk: 71%\nCPU: 48%"
+
+
+@pytest.mark.parametrize(
+    ("seconds", "text"),
+    [(30, "30 секунд"), (60, "1 минута"), (120, "2 минуты"), (600, "10 минут"), (7200, "2 часа")],
+)
+def test_format_interval_russian(seconds: float, text: str) -> None:
+    assert format_interval(seconds) == text
+
+
+def test_card_of_a_site_that_was_never_checked() -> None:
+    service = ManagedService(
+        ServiceConfig(name="New", url="https://new.test"), ServiceSource.TELEGRAM
+    )
+    text, markup = card_view(service, None, MSK)
+    assert text.startswith("⚪ New")
+    assert "Статус: ⚪ ещё не проверялся" in text
+    assert [b["text"] for row in markup["inline_keyboard"] for b in row] == [
+        "🔄 Проверить",
+        "⏸ Пауза",
+        "🗑 Удалить",
+        "« Назад",
+    ]

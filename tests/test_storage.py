@@ -63,3 +63,21 @@ async def test_creates_parent_directory(tmp_path: Path) -> None:
     async with StateStore(path):
         pass
     assert path.exists()
+
+
+async def test_managed_services_crud(store: StateStore) -> None:
+    assert await store.list_services() == []
+    await store.add_service("A", URL)
+    await store.add_service("B", "https://b.test")
+    assert [(r.name, r.url, r.enabled) for r in await store.list_services()] == [
+        ("A", URL, True),
+        ("B", "https://b.test", True),
+    ]
+
+    await store.set_service_enabled("B", False)
+    assert [r.enabled for r in await store.list_services()] == [True, False]
+
+    await store.save(ServiceState(name="A", url=URL, status=Status.DOWN))
+    await store.delete_service("A")
+    assert [r.name for r in await store.list_services()] == ["B"]
+    assert (await store.load("A", URL)).status is Status.UNKNOWN  # state is gone too

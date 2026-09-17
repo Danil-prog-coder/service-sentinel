@@ -1,3 +1,3 @@
-from monitor.storage.sqlite import StateStore
+from monitor.storage.sqlite import ServiceRecord, StateStore
 
-__all__ = ["StateStore"]
+__all__ = ["ServiceRecord", "StateStore"]
