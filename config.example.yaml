@@ -1,0 +1,34 @@
+# service-sentinel configuration.
+# The file is OPTIONAL: sites can be added straight from the Telegram bot (kept in SQLite).
+# Copy to config.yaml only if you want to pin sites to the server / to Git.
+# Secrets (Telegram token / chat id) are NOT stored here - only in .env / environment.
+
+monitor:
+  interval: 10m            # how often to check all services (500ms / 5s / 10m / 1h)
+  failure_threshold: 2     # consecutive failed checks before a service is DOWN
+  recovery_threshold: 1    # consecutive successful checks before a DOWN service is UP again
+  request_timeout: 5s      # default per-request timeout
+  max_concurrency: 10      # max simultaneous HTTP requests
+  timezone: Europe/Moscow  # used for timestamps in Telegram messages
+  # user_agent: service-sentinel/0.1
+  # shutdown_timeout: 15s  # how long to wait for a running cycle on SIGTERM
+
+# Sites listed here are read-only in the bot: it shows and checks them, but pausing and
+# deleting them is done in this file (sites added from Telegram are managed from the bot).
+# Uncomment and replace with your real URLs if you want file-managed sites.
+
+# services:
+#   - name: "My Website"                        # unique name (state key in the database)
+#     url: "https://example.ru"                 # shown in alerts
+#     health_url: "https://example.ru/health"   # optional: endpoint actually checked
+#     enabled: true
+#
+#   - name: "My API"
+#     url: "https://api.example.com/health"
+#     timeout: 10s              # optional per-service override
+#     # failure_threshold: 3    # optional per-service override
+#     # recovery_threshold: 2   # optional per-service override
+#     # follow_redirects: true  # default true: 3xx are followed, final response is checked
+
+# Stage 2 (not implemented yet): server metrics via a MetricsProvider
+# (Zabbix / own agent / SSH). See README, section "Server metrics".

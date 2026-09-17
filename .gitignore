@@ -1,0 +1,36 @@
+# Secrets and local config
+.env
+.env.*
+!.env.example
+config.yaml
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+
+# Runtime data
+data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+
+# IDE
+.idea/
+.vscode/
+
+# Claude Code local data (worktrees, settings)
+.claude/

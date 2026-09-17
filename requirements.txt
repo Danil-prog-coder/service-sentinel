@@ -1,0 +1,14 @@
+# Runtime dependencies of service-sentinel.
+#
+# The source of truth is pyproject.toml ([project] dependencies); this file mirrors it
+# for tools and CI that expect requirements.txt. Keep both in sync when adding a package.
+#
+#   pip install -r requirements.txt
+#
+# A normal install (pip install .  /  pip install -e .) does not need this file.
+
+httpx>=0.27,<1        # HTTP checks and the Telegram Bot API (one async client)
+PyYAML>=6.0           # config.yaml
+aiosqlite>=0.20       # SQLite: service state and the sites added from Telegram
+pydantic>=2.7,<3      # config validation
+tzdata>=2024.1        # time zones on Windows and slim images
