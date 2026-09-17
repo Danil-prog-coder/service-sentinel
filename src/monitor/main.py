@@ -16,8 +16,10 @@ from monitor.config import AppConfig, ConfigError, EnvSettings, load_config, loa
 from monitor.healthcheck import write_heartbeat
 from monitor.log import configure_logging
 from monitor.monitoring import MonitorService
+from monitor.registry import ServiceRegistry
 from monitor.storage import StateStore
 from monitor.telegram import DryRunNotifier, Notifier, TelegramClient, TelegramError
+from monitor.telegram.bot import TelegramBot
 
 logger = logging.getLogger("monitor")
 
@@ -38,6 +40,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--telegram-chats",
         action="store_true",
         help="print chats the bot has seen recently (to find TELEGRAM_CHAT_ID) and exit",
+    )
+    parser.add_argument(
+        "--no-bot",
+        action="store_true",
+        help="do not run the Telegram control bot, only send alerts",
     )
     return parser.parse_args(argv)
 
@@ -88,6 +95,7 @@ async def run(args: argparse.Namespace, env: EnvSettings, config: AppConfig) -> 
 
     async with AsyncExitStack() as stack:
         notifier: Notifier = DryRunNotifier()
+        telegram: TelegramClient | None = None
         if env.telegram_bot_token:
             tg_http = await stack.enter_async_context(httpx.AsyncClient())
             telegram = TelegramClient(tg_http, env.telegram_bot_token, env.telegram_chat_id or "")
@@ -107,19 +115,33 @@ async def run(args: argparse.Namespace, env: EnvSettings, config: AppConfig) -> 
             )
         )
         store = await stack.enter_async_context(StateStore(env.db_path))
-        monitor = MonitorService(settings, config.services, HttpChecker(http), store, notifier)
+        registry = ServiceRegistry(store, config.services)
+        monitor = MonitorService(settings, registry, HttpChecker(http), store, notifier)
         await monitor.load_state()
 
         if args.once:
             await monitor.run_cycle()
             return 0
 
+        bot: TelegramBot | None = None
+        if telegram is not None and env.telegram_chat_id and not args.dry_run and not args.no_bot:
+            bot = TelegramBot(telegram, monitor, env.telegram_chat_id)
+
         stop = asyncio.Event()
         install_signal_handlers(stop)
         write_heartbeat(env.heartbeat_path, settings.interval)
-        await monitor.run_forever(
-            stop, on_cycle_done=lambda: write_heartbeat(env.heartbeat_path, settings.interval)
-        )
+        # The bot and the monitoring loop share the process and the event loop, and both
+        # end on the same stop event, so SIGTERM shuts everything down gracefully.
+        async with asyncio.TaskGroup() as tasks:
+            tasks.create_task(
+                monitor.run_forever(
+                    stop,
+                    on_cycle_done=lambda: write_heartbeat(env.heartbeat_path, settings.interval),
+                ),
+                name="monitor",
+            )
+            if bot is not None:
+                tasks.create_task(bot.run(stop), name="telegram-bot")
     logger.info("shutdown complete")
     return 0
 
@@ -132,7 +154,9 @@ def main(argv: list[str] | None = None) -> None:
 
     config_path = args.config or env.config_path
     try:
-        config = load_config(config_path)
+        # config.yaml is optional: sites can live in Telegram (SQLite) only. A path given
+        # explicitly with -c must exist, otherwise a typo would silently monitor nothing.
+        config = load_config(config_path, required=args.config is not None)
     except ConfigError as exc:
         logger.error("configuration error: %s", exc)
         sys.exit(2)
@@ -143,6 +167,7 @@ def main(argv: list[str] | None = None) -> None:
         extra={
             "version": __version__,
             "config": str(config_path),
+            "config_found": config_path.is_file(),
             "services_total": len(config.services),
             "services_enabled": len(enabled),
             "interval": config.monitor.interval,
@@ -156,7 +181,7 @@ def main(argv: list[str] | None = None) -> None:
         logger.info("configuration is valid")
         sys.exit(0)
     if not enabled and not (args.test_telegram or args.telegram_chats):
-        logger.warning("no enabled services in config, nothing to monitor")
+        logger.info("no services in config.yaml, using the sites added from Telegram")
 
     try:
         code = asyncio.run(run(args, env, config))

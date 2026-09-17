@@ -36,6 +36,28 @@ def parse_duration(value: Any) -> float:
 Duration = Annotated[float, BeforeValidator(parse_duration), Field(gt=0)]
 
 
+def normalize_url(value: str) -> str:
+    """Turn Telegram input into a valid absolute URL (``site.ru`` -> ``https://site.ru``)."""
+    text = value.strip().strip("<>").rstrip(",.;")
+    if not text:
+        raise ValueError("empty URL")
+    bare = "://" not in text
+    if bare:
+        text = f"https://{text}"
+    url = _validate_http_url(text)
+    # "https://shop" is a valid URL, but a word without a dot is almost always a typo.
+    # An explicit scheme means the user knows what they are doing (http://myhost:8080).
+    if bare and "." not in (httpx.URL(url).host or "") and httpx.URL(url).host != "localhost":
+        raise ValueError(f"URL must contain a domain, got {value!r}")
+    return url
+
+
+def name_from_url(url: str) -> str:
+    """Default service name for a URL added from Telegram: its host without ``www.``."""
+    host = httpx.URL(url).host
+    return host.removeprefix("www.") or url
+
+
 def _validate_http_url(value: str) -> str:
     try:
         url = httpx.URL(value)
@@ -116,9 +138,13 @@ class AppConfig(BaseModel):
         return [s for s in self.services if s.enabled]
 
 
-def load_config(path: Path) -> AppConfig:
+def load_config(path: Path, *, required: bool = False) -> AppConfig:
+    """Load the YAML config. A missing file is an error only when explicitly ``required``:
+    without it the monitor runs on the sites added from Telegram alone."""
     if not path.is_file():
-        raise ConfigError(f"config file not found: {path}")
+        if required:
+            raise ConfigError(f"config file not found: {path}")
+        return AppConfig()
     try:
         raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     except yaml.YAMLError as exc:

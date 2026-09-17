@@ -10,6 +10,8 @@
   неудачных проверок подряд, а снова `UP` — после `recovery_threshold` успешных.
 - Пишет в Telegram **только при смене состояния**: `UP → DOWN` и `DOWN → UP`.
   Если сайт лежит 3 часа, придёт одно сообщение о падении и одно о восстановлении.
+- **Управляется из Telegram**: бот с inline-кнопками показывает список сайтов и карточку
+  каждого, добавляет новые по ссылке, ставит на паузу, удаляет и проверяет вне расписания.
 - Хранит состояние в SQLite, поэтому после перезапуска нет ни повторных алертов, ни потерянных.
 - Пишет structured-логи (JSON) и маскирует секреты.
 - Архитектура заранее готова к мониторингу серверов (CPU/RAM/Disk) — это второй этап.
@@ -29,25 +31,39 @@
 ## 2. Архитектура
 
 ```
-            config.yaml (сайты, настройки)      .env (секреты)
-                          │                        │
-                          ▼                        ▼
-                 main.py — CLI, сигналы, закрытие ресурсов
-                          │
-                 MonitorService — цикл раз в interval
-          asyncio.TaskGroup + Semaphore(max_concurrency)
-         ┌────────────┬───────────────┬────────────────┐
-         ▼            ▼               ▼                ▼
-    HttpChecker   state_machine    StateStore       heartbeat
-    (httpx,       UP/DOWN, пороги, (SQLite,         (для Docker
-    общий клиент) решение об алерте aiosqlite)       healthcheck)
-                          │
-                          ▼
-                 Notifier ─── TelegramClient (Bot API через httpx)
-                          └── DryRunNotifier (только лог)
+     config.yaml (необязателен)   .env (секреты)   SQLite (сайты из Telegram)
+                 │                     │                     │
+                 └─────────────┬───────┴──────────┬──────────┘
+                               ▼                  ▼
+                    main.py — CLI, сигналы, закрытие ресурсов
+                               │
+                   один процесс, один event loop, один stop-event
+                 ┌─────────────┴───────────────┐
+                 ▼                             ▼
+        MonitorService                  TelegramBot
+        цикл раз в interval             long polling getUpdates
+        TaskGroup + Semaphore           команды и inline-кнопки
+                 │                             │
+                 │      ServiceRegistry ◄──────┘  добавить / пауза / удалить
+                 │      config.yaml (read-only) + SQLite (из Telegram)
+                 │
+    ┌────────────┼───────────────┬────────────────┐
+    ▼            ▼               ▼                ▼
+HttpChecker  state_machine    StateStore       heartbeat
+(httpx,      UP/DOWN, пороги, (SQLite,         (для Docker
+общий клиент) решение об алерте aiosqlite)      healthcheck)
+                 │
+                 ▼
+        Notifier ─── TelegramClient (Bot API через httpx)
+                 └── DryRunNotifier (только лог)
 
     metrics/ (этап 2): MetricsProvider Protocol → Zabbix / свой agent / SSH / Timeweb API
 ```
+
+Бот и мониторинг живут в одном процессе и останавливаются по одному и тому же событию,
+поэтому `SIGTERM` (`docker compose stop`) корректно завершает и цикл проверок, и long polling.
+Проверка одного сайта защищена персональным `asyncio.Lock`: ручная проверка из бота не может
+идти одновременно с плановой, а значит не появится ни двойных алертов, ни гонок за состояние.
 
 **Как устроена защита от дублей.** У каждого сервиса хранится `notified_status` — статус, о котором
 вы уже получили сообщение. Алерт уходит, только если текущий статус с ним не совпадает. Поэтому:
@@ -62,14 +78,17 @@
 src/monitor/
   main.py                    точка входа, CLI, graceful shutdown
   config.py                  YAML + ENV, валидация (pydantic)
+  registry.py                список сайтов: config.yaml (read-only) + SQLite (из Telegram)
   log.py                     JSON/text-логи, маскирование секретов
   healthcheck.py             heartbeat-файл и проверка для Docker
   checker/http.py            HTTP-проверка и классификация ошибок
   monitoring/state_machine.py  логика UP/DOWN (чистые функции)
   monitoring/service.py      цикл мониторинга
-  telegram/client.py         Bot API sendMessage с ретраями, Notifier Protocol
-  telegram/formatting.py     тексты сообщений
-  storage/sqlite.py          сохранение состояния
+  telegram/client.py         Bot API (sendMessage/getUpdates/...) с ретраями, Notifier
+  telegram/bot.py            бот управления: long polling, команды, inline-кнопки
+  telegram/ui.py             тексты и клавиатуры бота (чистые функции)
+  telegram/formatting.py     тексты алертов
+  storage/sqlite.py          состояние сервисов + сайты, добавленные из Telegram
   metrics/base.py            Server, Metrics, MetricsProvider (этап 2)
   metrics/thresholds.py      пороги RAM/Disk/CPU (этап 2)
   models/                    CheckResult, ServiceState, Status
@@ -127,9 +146,64 @@ python -m monitor --telegram-chats
 python -m monitor --test-telegram
 ```
 
-## 7. Как добавить новый сайт
+## 7. Управление через Telegram-бота
 
-Добавьте запись в `config.yaml`:
+Бот работает в том же процессе, что и мониторинг, и отвечает **только в чате
+`TELEGRAM_CHAT_ID`** — сообщения из любых других чатов игнорируются. При старте он
+регистрирует команды (`setMyCommands`) и пропускает updates, накопившиеся, пока сервис был
+выключен, поэтому старые команды не выполнятся задним числом.
+
+Отправьте боту `/start` или `/menu`:
+
+```
+🛰 service-sentinel
+
+Сайтов: 3 — 🟢 2 · 🔴 1
+Интервал проверки: 10 минут.
+
+[ 📋 Сайты ]        [ ➕ Добавить ]
+[ 🔄 Проверить все ] [ ❓ Помощь ]
+```
+
+- **📋 Сайты** — список со статусами (`🟢` работает, `🔴` не работает, `⚪` ещё не
+  проверялся, `⏸` на паузе). Каждый сайт — кнопка, открывающая его карточку.
+- **Карточка сайта** — ссылка, статус, с какого времени он такой, последний HTTP-код,
+  время ответа и текст ошибки. Кнопки: `🔄 Проверить`, `⏸ Пауза` / `▶️ Включить`,
+  `🗑 Удалить` (с подтверждением), `« Назад`.
+- **➕ Добавить** — бот попросит прислать ссылку **ответом на своё сообщение**
+  (ForceReply). Так сделано потому, что в группах у ботов включён privacy mode: обычные
+  сообщения бот не видит, а ответы на свои — видит. Формат:
+  `https://site.ru` или `https://site.ru Мой магазин`. Без названия оно берётся из домена
+  (`https://www.shop.ru/health` → `shop.ru`). Сразу после добавления сайт проверяется и
+  показывается его карточка.
+- **🔄 Проверить все** — внеплановая проверка всех сайтов, не дожидаясь `interval`.
+
+Команды (работают и без кнопок):
+
+| Команда | Что делает |
+|---|---|
+| `/start`, `/menu` | главное меню |
+| `/list`, `/status` | список сайтов со статусами |
+| `/check` | проверить все сайты сейчас |
+| `/add <ссылка> [название]` | добавить сайт, например `/add shop.ru Магазин` |
+| `/help` | справка |
+
+**Откуда берутся сайты.** Добавленные из Telegram хранятся в SQLite (таблица
+`managed_service`) и после перезапуска загружаются автоматически. Сайты из `config.yaml`
+помечены в списке значком `📄`: бот их показывает и проверяет, но пауза и удаление для них —
+только правкой файла (файл остаётся единственным источником правды). Сам файл `config.yaml`
+необязателен: можно вообще не создавать его и вести все сайты из бота.
+
+Если бот не нужен (только алерты), запустите монитор с `--no-bot`.
+
+## 8. Как добавить новый сайт
+
+**Вариант А — из Telegram** (ничего не нужно перезапускать): кнопка `➕ Добавить` или
+команда `/add https://shop.example.ru Мой магазин`. Сайт сразу проверяется, попадает в
+SQLite и переживает перезапуск.
+
+**Вариант Б — в `config.yaml`**, если сайт должен быть частью конфигурации сервера
+(например, лежать в Git и разворачиваться вместе с кодом):
 
 ```yaml
 services:
@@ -153,7 +227,11 @@ docker compose restart monitor
 Если у сервиса поменялся проверяемый URL, его состояние сбрасывается в `UNKNOWN`.
 Чтобы временно отключить проверку, поставьте `enabled: false`.
 
-## 8. Как настроить /health endpoint
+Имя сервиса — ключ состояния в базе, поэтому переименование сайта в `config.yaml`
+начинает его историю заново. Имена сайтов из Telegram уникальны в пределах обоих списков:
+занятое имя бот не даст использовать повторно.
+
+## 9. Как настроить /health endpoint
 
 Монитор смотрит только на HTTP-статус: `200` — всё хорошо, `5xx` (обычно `503`) — приложение
 неработоспособно. Endpoint должен быть быстрым, без авторизации и без тяжёлых операций.
@@ -194,7 +272,7 @@ location = /health {
 }
 ```
 
-## 9. Как запустить локально
+## 10. Как запустить локально
 
 Нужен Python 3.12+.
 
@@ -209,14 +287,17 @@ python -m venv .venv
 (на Windows: `.venv\Scripts\pip install -e ".[dev]"`)
 
 ```bash
-cp config.example.yaml config.yaml
-```
-
-```bash
 cp .env.example .env
 ```
 
-Заполните `.env` и URL в `config.yaml`, затем:
+Заполните `.env`. Файл `config.yaml` создавать не обязательно — сайты можно добавить из
+бота. Если хотите вести список файлом:
+
+```bash
+cp config.example.yaml config.yaml
+```
+
+Затем:
 
 ```bash
 python -m monitor --check-config
@@ -243,6 +324,7 @@ python -m monitor
 | `--check-config` | только проверить конфиг |
 | `--test-telegram` | отправить тестовое сообщение |
 | `--telegram-chats` | показать чаты, которые видел бот (для `TELEGRAM_CHAT_ID`) |
+| `--no-bot` | не запускать бота управления, только отправлять алерты |
 | `--env-file PATH` | другой `.env` |
 
 Тесты и проверки:
@@ -255,17 +337,22 @@ pytest
 ruff check . && ruff format --check . && mypy
 ```
 
-## 10. Как запустить через Docker Compose
-
-```bash
-cp config.example.yaml config.yaml
-```
+## 11. Как запустить через Docker Compose
 
 ```bash
 cp .env.example .env
 ```
 
-Заполните оба файла, затем:
+```bash
+cp config.example.yaml config.yaml   # необязательно, но файл должен существовать
+```
+
+> `config.yaml` монтируется в контейнер как файл. Если его не создать, Docker создаст на
+> его месте пустую директорию — монитор это переживёт (список сайтов будет вести бот), но
+> аккуратнее просто скопировать пример или убрать строку с этим volume из
+> `docker-compose.yml`.
+
+Заполните `.env`, затем:
 
 ```bash
 docker compose up -d --build
@@ -292,7 +379,7 @@ docker compose ps
 docker compose run --rm monitor python -m monitor --test-telegram
 ```
 
-## 11. Как посмотреть логи
+## 12. Как посмотреть логи
 
 ```bash
 docker compose logs -f monitor
@@ -316,10 +403,11 @@ docker compose logs monitor | grep -E '"level": "(WARNING|ERROR)"'
 - смена статуса;
 - recovery;
 - отправка и ошибки Telegram;
+- нажатия кнопок в боте и изменения списка сайтов;
 - внутренние ошибки;
 - shutdown.
 
-## 12. Где хранится SQLite database
+## 13. Где хранится SQLite database
 
 | Запуск | Путь |
 |---|---|
@@ -327,7 +415,11 @@ docker compose logs monitor | grep -E '"level": "(WARNING|ERROR)"'
 | Docker | `/app/data/monitor.db` в named volume `monitor-data` |
 
 Файл переживает `docker compose down` и пересоздание контейнера. Удаляется только через
-`docker compose down -v`: после этого все сервисы стартуют в `UNKNOWN`.
+`docker compose down -v`: после этого все сервисы стартуют в `UNKNOWN`, **а сайты,
+добавленные из Telegram, пропадают** (сайты из `config.yaml` остаются в файле).
+
+Таблицы: `service_state` — состояние сервисов, `managed_service` — сайты, добавленные из
+бота (`name`, `url`, `enabled`, `created_at`).
 
 Посмотреть состояние:
 
@@ -341,7 +433,7 @@ docker compose exec monitor python -c "import sqlite3; [print(r) for r in sqlite
 docker compose cp monitor:/app/data/monitor.db ./monitor-backup.db
 ```
 
-## 13. Как добавить новый server metrics provider (этап 2)
+## 14. Как добавить новый server metrics provider (этап 2)
 
 HTTP-мониторинг не зависит от метрик. Контракт описан в `src/monitor/metrics/base.py`:
 
@@ -391,7 +483,7 @@ class ZabbixProvider:
   в Git. Пароли root в конфиге недопустимы. Зависимость `asyncssh` добавляется только вместе
   с провайдером.
 
-## 14. Какие секреты нельзя коммитить в Git
+## 15. Какие секреты нельзя коммитить в Git
 
 - `.env`, в том числе `TELEGRAM_BOT_TOKEN` (`TELEGRAM_CHAT_ID` тоже лучше не публиковать);
 - SSH private keys (`id_rsa`, `id_ed25519`, `*.pem`, `*.key`);
@@ -408,8 +500,8 @@ class ZabbixProvider:
 | Переменная | По умолчанию | Описание |
 |---|---|---|
 | `TELEGRAM_BOT_TOKEN` | — | токен бота (**обязательно**, кроме `--dry-run`) |
-| `TELEGRAM_CHAT_ID` | — | ID чата/группы (**обязательно**, кроме `--dry-run`) |
-| `CONFIG_PATH` | `config.yaml` | путь к YAML |
+| `TELEGRAM_CHAT_ID` | — | ID чата/группы (**обязательно**, кроме `--dry-run`); только в нём работает бот |
+| `CONFIG_PATH` | `config.yaml` | путь к YAML (файл необязателен) |
 | `DB_PATH` | `data/monitor.db` | SQLite |
 | `HEARTBEAT_PATH` | `data/heartbeat.json` | heartbeat для healthcheck |
 | `LOG_LEVEL` | `INFO` | `DEBUG`/`INFO`/`WARNING`/`ERROR` |

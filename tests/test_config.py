@@ -2,7 +2,15 @@ from pathlib import Path
 
 import pytest
 
-from monitor.config import ConfigError, EnvSettings, load_config, load_dotenv, parse_duration
+from monitor.config import (
+    ConfigError,
+    EnvSettings,
+    load_config,
+    load_dotenv,
+    name_from_url,
+    normalize_url,
+    parse_duration,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -26,11 +34,8 @@ def test_example_config_is_valid() -> None:
     assert config.monitor.interval == 600
     assert config.monitor.failure_threshold == 2
     assert config.monitor.request_timeout == 5
-    assert len(config.services) == 3
-    assert [s.name for s in config.enabled_services] == ["Tatiana Website", "Another API"]
-    site = config.services[0]
-    assert site.check_url == "https://example.ru/health"
-    assert config.services[1].timeout == 10
+    # The example ships without active sites: they are added from the bot.
+    assert config.services == []
 
 
 def write(tmp_path: Path, text: str) -> Path:
@@ -70,9 +75,45 @@ def test_invalid_config(tmp_path: Path, text: str, error: str) -> None:
         load_config(write(tmp_path, text))
 
 
-def test_missing_config(tmp_path: Path) -> None:
+def test_missing_config_is_optional(tmp_path: Path) -> None:
+    config = load_config(tmp_path / "nope.yaml")
+    assert config.services == []
+    assert config.monitor.interval == 600
+
+
+def test_missing_config_required(tmp_path: Path) -> None:
     with pytest.raises(ConfigError, match="not found"):
-        load_config(tmp_path / "nope.yaml")
+        load_config(tmp_path / "nope.yaml", required=True)
+
+
+@pytest.mark.parametrize(
+    ("raw", "url"),
+    [
+        ("https://site.ru", "https://site.ru"),
+        ("site.ru", "https://site.ru"),
+        ("  http://site.ru/health  ", "http://site.ru/health"),
+        ("<https://site.ru>", "https://site.ru"),
+    ],
+)
+def test_normalize_url(raw: str, url: str) -> None:
+    assert normalize_url(raw) == url
+
+
+@pytest.mark.parametrize("raw", ["", "   ", "ftp://site.ru", "https://"])
+def test_normalize_url_invalid(raw: str) -> None:
+    with pytest.raises(ValueError, match="URL"):
+        normalize_url(raw)
+
+
+@pytest.mark.parametrize(
+    ("url", "name"),
+    [
+        ("https://www.site.ru/health", "site.ru"),
+        ("https://api.site.ru:8443/x", "api.site.ru"),
+    ],
+)
+def test_name_from_url(url: str, name: str) -> None:
+    assert name_from_url(url) == name
 
 
 def test_env_settings() -> None:

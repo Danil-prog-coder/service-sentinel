@@ -1,6 +1,8 @@
+import asyncio
 import json
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -53,6 +55,94 @@ class TelegramRecorder:
         return httpx.Response(200, json={"ok": True, "result": {"message_id": len(self.messages)}})
 
 
+class BotApi:
+    """MockTransport handler emulating the Bot API methods used by the control bot.
+
+    ``queue()`` puts updates into the next ``getUpdates`` answer; everything the bot
+    sends back is recorded instead of being delivered anywhere.
+    """
+
+    def __init__(self) -> None:
+        self.pending: list[dict[str, Any]] = []
+        self.sent: list[dict[str, Any]] = []
+        self.edits: list[dict[str, Any]] = []
+        self.answers: list[dict[str, Any]] = []
+        self.commands: list[dict[str, str]] = []
+        self.get_updates_calls: list[dict[str, Any]] = []
+        self._next_message_id = 100
+        self._update_id = 0
+
+    # --- test helpers ---------------------------------------------------------
+
+    def queue(self, update: dict[str, Any]) -> dict[str, Any]:
+        self._update_id += 1
+        update.setdefault("update_id", self._update_id)
+        self.pending.append(update)
+        return update
+
+    @property
+    def texts(self) -> list[str]:
+        return [message["text"] for message in self.sent]
+
+    @property
+    def last_text(self) -> str:
+        return (self.edits or self.sent)[-1]["text"]
+
+    def last_keyboard(self) -> list[list[dict[str, str]]]:
+        markup = (self.edits or self.sent)[-1].get("reply_markup") or {}
+        return markup.get("inline_keyboard", [])
+
+    def buttons(self) -> list[str]:
+        return [b["text"] for row in self.last_keyboard() for b in row]
+
+    def callback_data(self, text_startswith: str) -> str:
+        for row in self.last_keyboard():
+            for item in row:
+                if item["text"].startswith(text_startswith):
+                    return item["callback_data"]
+        raise AssertionError(f"no button starting with {text_startswith!r} in {self.buttons()}")
+
+    # --- the fake API ---------------------------------------------------------
+
+    async def __call__(self, request: httpx.Request) -> httpx.Response:
+        method = request.url.path.rsplit("/", 1)[-1]
+        payload = json.loads(request.content)
+        handler = getattr(self, f"_{method}", None)
+        if handler is None:
+            raise AssertionError(f"unexpected Bot API method: {method}")
+        result = handler(payload)
+        if method == "getUpdates" and not result:
+            # Emulate long polling, so a polling loop under test does not spin.
+            await asyncio.sleep(min(float(payload.get("timeout", 0)), 0.02))
+        return httpx.Response(200, json={"ok": True, "result": result})
+
+    def _getUpdates(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
+        self.get_updates_calls.append(payload)
+        offset = payload.get("offset")
+        if offset == -1:
+            return self.pending[-1:]
+        updates = [u for u in self.pending if offset is None or u["update_id"] >= offset]
+        self.pending = []
+        return updates
+
+    def _sendMessage(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self.sent.append(payload)
+        self._next_message_id += 1
+        return {"message_id": self._next_message_id}
+
+    def _editMessageText(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self.edits.append(payload)
+        return {"message_id": payload["message_id"]}
+
+    def _answerCallbackQuery(self, payload: dict[str, Any]) -> bool:
+        self.answers.append(payload)
+        return True
+
+    def _setMyCommands(self, payload: dict[str, Any]) -> bool:
+        self.commands = payload["commands"]
+        return True
+
+
 @pytest.fixture
 def sites() -> ScriptedSites:
     return ScriptedSites()
@@ -83,6 +173,17 @@ async def make_telegram(
             return TelegramClient(client, TOKEN, CHAT_ID, sleep=_no_sleep, **kwargs)  # type: ignore[arg-type]
 
         yield factory
+
+
+@pytest.fixture
+def bot_api() -> BotApi:
+    return BotApi()
+
+
+@pytest.fixture
+async def bot_client(bot_api: BotApi) -> AsyncIterator[TelegramClient]:
+    async with httpx.AsyncClient(transport=httpx.MockTransport(bot_api)) as client:
+        yield TelegramClient(client, TOKEN, CHAT_ID, sleep=_no_sleep, max_attempts=1)
 
 
 @pytest.fixture
