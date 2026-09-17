@@ -19,10 +19,10 @@ services:
       LOG_FORMAT: json
       TZ: Europe/Moscow
     volumes:
-      # config.yaml is optional: without it the monitor runs on the sites added from
-      # the Telegram bot (they live in the monitor-data volume). Create the file before
-      # `docker compose up`, otherwise Docker creates an empty directory in its place.
-      - ./config.yaml:/app/config.yaml:ro
+      # Named volume only: the hosting platform's compose sanitizer rejects bind mounts.
+      # config.yaml is therefore not mounted here - the monitor runs on the sites added
+      # from the Telegram bot, which live in this volume. To keep the list in a file
+      # locally, add docker-compose.local.yml on top (see README, section 11).
       - monitor-data:/app/data
     # Hardening: the app needs only outbound HTTPS and its data volume.
     read_only: true
@@ -31,8 +31,8 @@ services:
     cap_drop:
       - ALL
     # No `security_opt: [no-new-privileges:true]` here: the hosting platform's compose
-    # sanitizer rejects the whole file when that key is present. Locally you can add it
-    # back via a docker-compose.override.yml.
+    # sanitizer rejects the whole file when that key is present. It is restored locally
+    # by docker-compose.local.yml.
     stop_grace_period: 30s
     mem_limit: 256m
     logging:

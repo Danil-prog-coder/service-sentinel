@@ -22,3 +22,4 @@ venv/
 tests/
 Dockerfile
 docker-compose.yml
+docker-compose.local.yml

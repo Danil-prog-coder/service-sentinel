@@ -354,15 +354,6 @@ ruff check . && ruff format --check . && mypy
 cp .env.example .env
 ```
 
-```bash
-cp config.example.yaml config.yaml   # необязательно, но файл должен существовать
-```
-
-> `config.yaml` монтируется в контейнер как файл. Если его не создать, Docker создаст на
-> его месте пустую директорию — монитор это переживёт (список сайтов будет вести бот), но
-> аккуратнее просто скопировать пример или убрать строку с этим volume из
-> `docker-compose.yml`.
-
 Заполните `.env`, затем:
 
 ```bash
@@ -376,17 +367,42 @@ docker compose ps
 В `docker-compose.yml` уже настроены:
 - `restart: unless-stopped`;
 - запуск не от root (uid 10001);
-- read-only файловая система, `cap_drop: ALL`, `no-new-privileges`;
+- read-only файловая система, `cap_drop: ALL`;
 - healthcheck;
 - ротация логов;
 - volume для БД.
+
+В базовом `docker-compose.yml` `config.yaml` **не монтируется**: список сайтов ведётся
+из бота и лежит в volume `monitor-data`. Так сделано потому, что санитайзер compose на
+хостинге запрещает bind-mount'ы и `security_opt` (см. ниже). Чтобы вести список файлом
+локально, создайте `config.yaml` и добавьте оверлей `docker-compose.local.yml` — он
+монтирует файл read-only и возвращает `no-new-privileges`:
+
+```bash
+cp config.example.yaml config.yaml
+```
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.local.yml up -d --build
+```
+
+> Оверлей намеренно называется не `docker-compose.override.yml`: такое имя Compose
+> подхватывает автоматически, в том числе на хостинге, и деплой снова упёрся бы в
+> запрет bind-mount'ов. Если `config.yaml` не создать, Docker создаст на его месте
+> пустую директорию — монитор это переживёт, но список сайтов будет пустым.
 
 **Деплой на хостинг (App Platform и т.п.).** `.env` в репозиторий не попадает, поэтому
 на сервере его нет — это нормально, файл необязателен. Задайте `TELEGRAM_BOT_TOKEN` и
 `TELEGRAM_CHAT_ID` (и при желании `LOG_LEVEL`) в разделе переменных окружения панели
 хостинга. Нужен Docker Compose ≥ 2.24.
 
-`config.yaml` монтируется read-only. После его изменения выполните
+Такие платформы прогоняют `docker-compose.yml` через санитайзер и отклоняют файл целиком,
+если встречают запрещённый ключ. По этой причине из базового файла убраны `security_opt`
+и bind-mount `config.yaml` — их место в `docker-compose.local.yml`. Держите базовый файл
+в этих рамках: список сайтов на хостинге ведётся из бота, `config.yaml` туда всё равно не
+попадает (он в `.gitignore`).
+
+Локально `config.yaml` монтируется read-only оверлеем. После его изменения выполните
 `docker compose restart monitor`. Обновление кода: `git pull && docker compose up -d --build`.
 
 Разовая проверка Telegram внутри контейнера:
