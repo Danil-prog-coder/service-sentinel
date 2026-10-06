@@ -14,6 +14,12 @@ MAX_MESSAGE_LENGTH = 4096
 ALLOWED_UPDATES = ("message", "callback_query", "my_chat_member")
 
 
+_HINTS = {
+    401: " (invalid bot token: check TELEGRAM_BOT_TOKEN)",
+    409: " (the same bot token is polled by another running instance: stop it, e.g. the local or hosted copy)",
+}
+
+
 class Notifier(Protocol):
     async def send(self, text: str) -> None: ...
 
@@ -82,7 +88,9 @@ class TelegramClient:
                     if isinstance(retry_after, int | float):
                         delay = min(float(retry_after), 60.0)
                 elif response.status_code < 500:
-                    raise TelegramError(f"Telegram API rejected {method}: {last_error}")
+                    raise TelegramError(
+                        f"Telegram API rejected {method}: {last_error}{_HINTS.get(response.status_code, '')}"
+                    )
 
             if attempt < attempts:
                 logger.warning(

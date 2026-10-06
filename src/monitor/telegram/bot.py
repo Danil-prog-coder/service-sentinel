@@ -71,7 +71,9 @@ class TelegramBot:
                 updates = await self._poll(stop)
             except TelegramError as exc:
                 logger.warning(
-                    "telegram polling failed, retrying",
+                    "telegram polling failed, retrying: %s (in %.0fs)",
+                    exc,
+                    backoff,
                     extra={"error": str(exc), "retry_in": backoff},
                 )
                 await _wait(stop, backoff)
