@@ -48,7 +48,9 @@ class TelegramBot:
         try:
             await self._client.set_my_commands(ui.BOT_COMMANDS)
         except TelegramError as exc:
-            logger.warning("failed to register bot commands", extra={"error": str(exc)})
+            logger.warning(
+                "failed to register bot commands: %s", exc, extra={"error": str(exc)}
+            )
         await self._skip_pending_updates()
 
     async def _skip_pending_updates(self) -> None:
@@ -56,7 +58,7 @@ class TelegramBot:
             # offset=-1 returns only the last pending update; confirming it drops the rest.
             updates = await self._client.get_updates(offset=-1, timeout=0, max_attempts=1)
         except TelegramError as exc:
-            logger.warning("could not skip old updates", extra={"error": str(exc)})
+            logger.warning("could not skip old updates: %s", exc, extra={"error": str(exc)})
             return
         if updates:
             self._offset = int(updates[-1]["update_id"]) + 1

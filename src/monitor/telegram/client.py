@@ -20,6 +20,16 @@ _HINTS = {
 }
 
 
+def _cause(exc: BaseException) -> str:
+    """Root cause (e.g. ``ConnectError <- gaierror``) without ever echoing the request URL."""
+    names = []
+    cur = exc.__cause__ or exc.__context__
+    while cur is not None and len(names) < 3:
+        names.append(type(cur).__name__)
+        cur = cur.__cause__ or cur.__context__
+    return " <- " + " <- ".join(names) if names else ""
+
+
 class Notifier(Protocol):
     async def send(self, text: str) -> None: ...
 
@@ -76,7 +86,7 @@ class TelegramClient:
                 )
             except httpx.HTTPError as exc:
                 # Deliberately no str(exc): some httpx errors embed the request URL.
-                last_error = f"network error: {type(exc).__name__}"
+                last_error = f"network error: {type(exc).__name__}{_cause(exc)}"
             else:
                 data = _json(response)
                 if response.status_code == 200 and data.get("ok"):
@@ -94,7 +104,10 @@ class TelegramClient:
 
             if attempt < attempts:
                 logger.warning(
-                    "telegram request failed, retrying",
+                    "telegram request failed, retrying: %s %s (attempt %d)",
+                    method,
+                    last_error,
+                    attempt,
                     extra={"method": method, "attempt": attempt, "error": last_error},
                 )
                 await self._sleep(delay)
