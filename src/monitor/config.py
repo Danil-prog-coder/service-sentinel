@@ -163,6 +163,7 @@ class EnvSettings:
 
     telegram_bot_token: str | None = field(default=None, repr=False)
     telegram_chat_id: str | None = None
+    telegram_api_base: str | None = None
     config_path: Path = Path("config.yaml")
     db_path: Path = Path("data/monitor.db")
     heartbeat_path: Path = Path("data/heartbeat.json")
@@ -181,6 +182,7 @@ class EnvSettings:
         return cls(
             telegram_bot_token=get("TELEGRAM_BOT_TOKEN"),
             telegram_chat_id=get("TELEGRAM_CHAT_ID"),
+            telegram_api_base=get("TELEGRAM_API_BASE"),
             config_path=Path(get("CONFIG_PATH") or defaults.config_path),
             db_path=Path(get("DB_PATH") or defaults.db_path),
             heartbeat_path=Path(get("HEARTBEAT_PATH") or defaults.heartbeat_path),

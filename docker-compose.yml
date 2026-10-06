@@ -12,6 +12,10 @@ services:
     environment:
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+      # Set when the host cannot reach api.telegram.org (ConnectTimeout in the logs):
+      # a reverse-proxy base URL, or an HTTP(S) proxy (httpx honours HTTPS_PROXY).
+      TELEGRAM_API_BASE: ${TELEGRAM_API_BASE:-}
+      HTTPS_PROXY: ${HTTPS_PROXY:-}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       CONFIG_PATH: /app/config.yaml
       DB_PATH: /app/data/monitor.db

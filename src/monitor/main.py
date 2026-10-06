@@ -98,7 +98,12 @@ async def run(args: argparse.Namespace, env: EnvSettings, config: AppConfig) -> 
         telegram: TelegramClient | None = None
         if env.telegram_bot_token:
             tg_http = await stack.enter_async_context(httpx.AsyncClient())
-            telegram = TelegramClient(tg_http, env.telegram_bot_token, env.telegram_chat_id or "")
+            telegram = TelegramClient(
+                tg_http,
+                env.telegram_bot_token,
+                env.telegram_chat_id or "",
+                **({"api_base": env.telegram_api_base} if env.telegram_api_base else {}),
+            )
             if args.telegram_chats:
                 await _print_telegram_chats(telegram)
                 return 0
